@@ -1,0 +1,146 @@
+name: BSN Backend API Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    name: Compile Project
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: 17
+
+      - name: Grant Execute Permission for Maven Wrapper
+        run: chmod +x mvnw
+
+      - name: Compile Project
+        run: ./mvnw clean compile
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:latest
+        environment:
+          MYSQL_ROOT_PASSWORD: ""
+          MYSQL_DATABASE: Qr-Sopra
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -u root" 
+          --health-interval 10s 
+          --health-timeout 5s 
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: 17
+
+      - name: Grant Execute Permission for Maven Wrapper
+        run: chmod +x mvnw
+
+      - name: Run Unit Tests
+        run: ./mvnw clean test
+
+      - name: Archive Test Reports
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-reports
+          path: target/surefire-reports/
+
+  build:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:latest
+        environment:
+          MYSQL_ROOT_PASSWORD: ""
+          MYSQL_DATABASE: Qr-Sopra
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -u root" 
+          --health-interval 10s 
+          --health-timeout 5s 
+          --health-retries 5
+
+    name: Build Backend
+    needs: [compile, unit-tests]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: 17
+
+      - name: Grant Execute Permission for Maven Wrapper
+        run: chmod +x mvnw
+
+      - name: Build Project
+        run: ./mvnw clean package
+
+  build-image:
+    runs-on: ubuntu-latest
+    name: Build Docker Image
+    needs: [build]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Grant Execute Permission for Maven Wrapper
+        run: chmod +x ./mvnw
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: 17
+
+      - name: Extract Project Version
+        id: extract_version
+        run: |
+          VERSION=$(./mvnw -q -Dexec.executable='echo' -Dexec.args='${project.version}' --non-recursive exec:exec)
+          echo "VERSION=${VERSION:-latest}" >> $GITHUB_ENV
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & Push to DockerHub
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Backend/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            daouthiamine/bsn-api:${{ env.VERSION }}
+            daouthiamine/bsn-api:1.0.0
+          build-args: |
+            PROFILE=dev
+            APP_VERSION=${{ env.VERSION }}
